@@ -113,8 +113,8 @@ export default function App() {
             <CrownIcon className="w-10 h-10 text-black" />
           </div>
           <div>
-            <h1 className="text-4xl md:text-5xl font-gallery uppercase tracking-tighter italic font-black leading-none py-1">
-              SAMO© GALLERY
+            <h1 className="text-4xl md:text-5xl font-gallery tracking-tighter italic font-black leading-none py-1">
+              90Ninth aESthETiC
             </h1>
             <p className="font-hand text-xs font-bold uppercase tracking-widest opacity-60 mt-1">
               SESSION_ACTIVE: {filteredImages.length > 0 ? "TRUE" : "FALSE"} // NY_1983
