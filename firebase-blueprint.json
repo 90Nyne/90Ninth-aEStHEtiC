@@ -1,0 +1,26 @@
+{
+  "entities": {
+    "Image": {
+      "title": "Image artifact",
+      "description": "Metadata for an uploaded image in the gallery",
+      "type": "object",
+      "properties": {
+        "url": { "type": "string", "description": "The base64 or URL of the image" },
+        "title": { "type": "string", "description": "User-defined title" },
+        "description": { "type": "string", "description": "User-defined description" },
+        "category": { "type": "string", "enum": ["Travel (Scrap)", "Portrait (Icon)", "Abstract (Ghost)"] },
+        "rotation": { "type": "number", "description": "Visual rotation for the scrapbook effect" },
+        "size": { "type": "string", "enum": ["small", "medium", "large"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "ownerId": { "type": "string", "description": "UID of the user who uploaded the image" }
+      },
+      "required": ["url", "title", "description", "category", "rotation", "size", "createdAt", "ownerId"]
+    }
+  },
+  "firestore": {
+    "/images/{imageId}": {
+      "schema": "Image",
+      "description": "Public gallery of images (in this simple version, but secure)"
+    }
+  }
+}

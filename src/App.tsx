@@ -3,11 +3,32 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { X } from "lucide-react";
+import { X, LogIn, LogOut } from "lucide-react";
 import { CrownIcon, SkullIcon } from "./components/Icons";
 import { BasquiatButton } from "./components/BasquiatButton";
+import { 
+  db, 
+  auth, 
+  signInWithGoogle, 
+  handleFirestoreError, 
+  OperationType 
+} from "./lib/firebase";
+import { 
+  collection, 
+  query, 
+  where, 
+  onSnapshot, 
+  addDoc, 
+  deleteDoc, 
+  updateDoc, 
+  doc, 
+  serverTimestamp,
+  orderBy
+} from "firebase/firestore";
+import { onAuthStateChanged, User as FirebaseUser } from "firebase/auth";
+import { resizeImage } from "./lib/imageUtils";
 
 type Category = "Travel (Scrap)" | "Portrait (Icon)" | "Abstract (Ghost)";
 
@@ -19,83 +40,135 @@ interface ImageData {
   category: Category;
   rotation: number;
   size: "small" | "medium" | "large";
+  ownerId: string;
 }
 
 const CATEGORIES: Category[] = ["Travel (Scrap)", "Portrait (Icon)", "Abstract (Ghost)"];
 
 export default function App() {
-  const [images, setImages] = useState<ImageData[]>([
-    {
-      id: "1",
-      url: "https://picsum.photos/seed/bas1/800/1000",
-      title: "GHOSTHEAD 01",
-      description: "FOUND OBJECT IN BROOKLYN",
-      category: "Abstract (Ghost)",
-      rotation: -2,
-      size: "large",
-    },
-    {
-      id: "2",
-      url: "https://picsum.photos/seed/bas2/800/600",
-      title: "ICON STUDY",
-      description: "STREET CORNER SHADOWS",
-      category: "Portrait (Icon)",
-      rotation: 3,
-      size: "medium",
-    },
-    {
-      id: "3",
-      url: "https://picsum.photos/seed/bas3/600/800",
-      title: "SCRAP REPEAT",
-      description: "SUBWAY WALL MEMORY",
-      category: "Travel (Scrap)",
-      rotation: 1,
-      size: "small",
-    },
-  ]);
-
+  const [user, setUser] = useState<FirebaseUser | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [images, setImages] = useState<ImageData[]>([]);
   const [filter, setFilter] = useState<Category | "ALL">("ALL");
   const [selectedImage, setSelectedImage] = useState<ImageData | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Monitor Auth State
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (currUser) => {
+      setUser(currUser);
+      setLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Sync Images from Firestore
+  useEffect(() => {
+    if (!user) {
+      setImages([]);
+      return;
+    }
+
+    const q = query(
+      collection(db, "images"), 
+      where("ownerId", "==", user.uid),
+      orderBy("createdAt", "desc")
+    );
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const loadedImages = snapshot.docs.map((doc) => ({
+        id: doc.id,
+        ...doc.data()
+      })) as ImageData[];
+      setImages(loadedImages);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, "images");
+    });
+
+    return () => unsubscribe();
+  }, [user]);
+
   // Handle Image Upload
   const handleUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
+    if (file && user) {
       const reader = new FileReader();
-      reader.onloadend = () => {
-        const newImage: ImageData = {
-          id: Date.now().toString(),
-          url: reader.result as string,
-          title: "GHOSTHEAD",
-          description: "FOUND OBJECT",
-          category: filter === "ALL" ? "Abstract (Ghost)" : filter,
-          rotation: Math.random() * 6 - 3, // -3 to 3 degrees
-          size: ["small", "medium", "large"][Math.floor(Math.random() * 3)] as any,
-        };
-        setImages((prev) => [newImage, ...prev]);
+      reader.onloadend = async () => {
+        try {
+          // Resize and compress image to stay under 1MB
+          const resizedUrl = await resizeImage(reader.result as string);
+          
+          const newImageData = {
+            url: resizedUrl,
+            title: "GHOSTHEAD",
+            description: "FOUND OBJECT",
+            category: filter === "ALL" ? "Abstract (Ghost)" : filter,
+            rotation: Math.random() * 6 - 3,
+            size: ["small", "medium", "large"][Math.floor(Math.random() * 3)] as any,
+            ownerId: user.uid,
+            createdAt: serverTimestamp(),
+          };
+          
+          await addDoc(collection(db, "images"), newImageData);
+        } catch (error) {
+          handleFirestoreError(error, OperationType.CREATE, "images");
+        }
       };
       reader.readAsDataURL(file);
     }
   };
 
   // Handle Delete
-  const handleDelete = (id: string, e: React.MouseEvent) => {
+  const handleDelete = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    setImages((prev) => prev.filter((img) => img.id !== id));
+    try {
+      await deleteDoc(doc(db, "images", id));
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, `images/${id}`);
+    }
   };
 
   // Handle Metadata Update
-  const updateMetadata = (id: string, field: "title" | "description", value: string) => {
-    setImages((prev) =>
-      prev.map((img) => (img.id === id ? { ...img, [field]: value } : img))
-    );
-    if (selectedImage && selectedImage.id === id) {
-      setSelectedImage({ ...selectedImage, [field]: value });
+  const updateMetadata = async (id: string, field: "title" | "description", value: string) => {
+    try {
+      await updateDoc(doc(db, "images", id), {
+        [field]: value
+      });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `images/${id}`);
     }
   };
 
   const filteredImages = filter === "ALL" ? images : images.filter((img) => img.category === filter);
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-[#E5E1D8]">
+        <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 2, ease: "linear" }}>
+          <CrownIcon className="w-24 h-24 text-black opacity-20" />
+        </motion.div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-[#E5E1D8] p-4 text-center">
+        <div className="max-w-md w-full bg-white border-4 border-black p-12 shadow-[20px_20px_0px_#1A1A1A] relative overflow-hidden">
+          <div className="bg-blobs opacity-10">
+            <div className="blob-red opacity-50" />
+          </div>
+          <CrownIcon className="w-16 h-16 mx-auto mb-6 text-[#FFD700]" />
+          <h1 className="text-5xl font-gallery font-black italic tracking-tighter mb-8 oil-stick-text">90Ninth aESthETiC</h1>
+          <p className="font-hand text-sm font-bold uppercase mb-12 opacity-60 italic">"GHOSTS DO NOT HAVE PRIVATE KEYS"</p>
+          <BasquiatButton onClick={signInWithGoogle} className="w-full flex items-center justify-center gap-2">
+            LOGIN WITH GOOGLE <LogIn className="w-5 h-5" />
+          </BasquiatButton>
+          <div className="mt-8 font-marker text-[10px] opacity-30">© SAMO 1982-202X // ACCESS_RESTRICTED</div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen px-4 py-8 md:px-12 relative">
@@ -107,7 +180,7 @@ export default function App() {
       </div>
 
       {/* Header */}
-      <header className="relative z-10 mb-12 flex flex-col md:flex-row md:items-center justify-between gap-8 border-b-4 border-black bg-white/40 backdrop-blur-sm p-6 -mx-4 md:-mx-12">
+      <header className="relative z-10 mb-12 flex flex-col lg:flex-row lg:items-center justify-between gap-8 border-b-4 border-black bg-white/40 backdrop-blur-sm p-6 -mx-4 md:-mx-12">
         <div className="flex items-center gap-6">
           <div className="w-14 h-14 flex items-center justify-center bg-[#FFD700] border-4 border-black transform -rotate-3 shrink-0">
             <CrownIcon className="w-10 h-10 text-black" />
@@ -117,24 +190,32 @@ export default function App() {
               90Ninth aESthETiC
             </h1>
             <p className="font-hand text-xs font-bold uppercase tracking-widest opacity-60 mt-1">
-              SESSION_ACTIVE: {filteredImages.length > 0 ? "TRUE" : "FALSE"} // NY_1983
+              FOUND_GHOSTS: {images.length.toString().padStart(3, '0')} // {user.email?.split('@')[0]}
             </p>
           </div>
         </div>
 
-        <div className="flex flex-col md:flex-row items-start md:items-center gap-6">
-          <nav className="flex gap-4">
+        <div className="flex flex-col md:flex-row items-start md:items-center gap-6 lg:gap-8">
+          <nav className="flex gap-4 overflow-x-auto pb-2 scrollbar-none w-full md:w-auto">
             <FilterTab active={filter === "ALL"} onClick={() => setFilter("ALL")} label="SCRAP" rotate={1} />
             <FilterTab active={filter === "Portrait (Icon)"} onClick={() => setFilter("Portrait (Icon)")} label="ICON" rotate={-2} />
             <FilterTab active={filter === "Abstract (Ghost)"} onClick={() => setFilter("Abstract (Ghost)")} label="GHOST" rotate={3} />
           </nav>
           
-          <BasquiatButton 
-            onClick={() => fileInputRef.current?.click()}
-            className="md:ml-4"
-          >
-            + ADD FIRE
-          </BasquiatButton>
+          <div className="flex items-center gap-4 w-full md:w-auto">
+            <BasquiatButton 
+              onClick={() => fileInputRef.current?.click()}
+              className="flex-1 md:flex-none"
+            >
+              + ADD FIRE
+            </BasquiatButton>
+            <button 
+              onClick={() => auth.signOut()}
+              className="p-3 border-4 border-black hover:bg-black hover:text-white transition-colors bg-white shadow-[4px_4px_0px_#1A1A1A] hover:shadow-none translate-y-0 hover:translate-y-1"
+            >
+              <LogOut className="w-5 h-5" />
+            </button>
+          </div>
         </div>
         
         <input 
@@ -312,7 +393,7 @@ function FilterTab({ active, onClick, label, rotate }: { active: boolean; onClic
       onClick={onClick}
       style={{ transform: `rotate(${rotate}deg)` }}
       className={`
-        px-4 py-1 border-2 border-black text-lg font-black uppercase tracking-tighter transition-all
+        px-4 py-1 border-2 border-black text-lg font-black uppercase tracking-tighter transition-all shrink-0
         ${active ? "bg-black text-white" : "bg-transparent hover:bg-black hover:text-white"}
       `}
     >

@@ -1,0 +1,65 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 0. Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Helpers ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+       return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // --- Image Validation ---
+    function isValidImage(data) {
+      return data.keys().hasAll(['url', 'title', 'description', 'category', 'rotation', 'size', 'createdAt', 'ownerId'])
+        && data.keys().size() == 8
+        && data.url is string && data.url.size() <= 1048576 // 1MB Firestore limit
+        && data.title is string && data.title.size() <= 200
+        && data.description is string && data.description.size() <= 2000
+        && data.category in ['Travel (Scrap)', 'Portrait (Icon)', 'Abstract (Ghost)']
+        && data.rotation is number && data.rotation >= -360 && data.rotation <= 360
+        && data.size in ['small', 'medium', 'large']
+        && data.createdAt == request.time
+        && data.ownerId == request.auth.uid;
+    }
+
+    // --- Collections ---
+    match /images/{imageId} {
+      allow get: if isOwner(existing().ownerId);
+      allow list: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+      
+      allow create: if isSignedIn() 
+        && isValidId(imageId)
+        && isValidImage(incoming());
+        
+      allow update: if isOwner(existing().ownerId)
+        && isValidImage(incoming())
+        && incoming().ownerId == existing().ownerId
+        && incoming().createdAt == existing().createdAt
+        && (
+          // Action: Edit metadata
+          incoming().diff(existing()).affectedKeys().hasOnly(['title', 'description'])
+        );
+        
+      allow delete: if isOwner(existing().ownerId);
+    }
+  }
+}
